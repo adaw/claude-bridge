@@ -177,16 +177,24 @@ for chunk in stream:
 
 ```json
 {
-  "providers": {
-    "claude-proxy": {
-      "kind": "openai",
-      "baseURL": "http://mac.local:8088/v1",
-      "apiKey": "not-needed",
-      "models": ["claude-opus-4-6", "claude-sonnet-4-5-20250929"]
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "claude-proxy": {
+        "baseUrl": "http://mac.local:8088/v1",
+        "apiKey": "not-needed",
+        "api": "openai-completions",
+        "models": [
+          { "id": "claude-opus-4-6", "name": "Claude Opus 4.6 (Bridge)" },
+          { "id": "claude-sonnet-4-5-20250929", "name": "Claude Sonnet 4.5 (Bridge)" }
+        ]
+      }
     }
   }
 }
 ```
+
+> **⚠️ Important:** The `"api": "openai-completions"` field and `"apiKey": "not-needed"` are **required** — without them OpenClaw won't route requests to the bridge correctly.
 
 ## API Endpoints
 
