@@ -1,97 +1,171 @@
 # Claude Bridge
 
-OpenAI-compatible API server that bridges requests to Claude CLI. Use any OpenAI-compatible client (Cursor, Continue, Open WebUI, OpenClaw, LiteLLM, etc.) with your Claude CLI OAuth authentication.
+> OpenAI-compatible API proxy for Anthropic Claude models.  
+> Use any OpenAI SDK client with your Claude API key or OAuth token.
 
 ```
-Your App (OpenAI SDK)
-    |
-Claude Bridge (Express :8080)
-    |
-Claude CLI (--print --output-format json/stream-json)
-    |
-Anthropic API
+┌─────────────────────┐     ┌──────────────────┐     ┌─────────────────────┐
+│  Your App            │────▶│  Claude Bridge    │────▶│  Anthropic API      │
+│  (OpenAI SDK/client) │     │  (Express :8080)  │     │  api.anthropic.com  │
+└─────────────────────┘     └──────────────────┘     └─────────────────────┘
 ```
+
+**Works with:** Cursor, Continue, Open WebUI, OpenClaw, LiteLLM, LangChain, any OpenAI-compatible client.
+
+## Features
+
+- ✅ **Chat Completions** (`/v1/chat/completions`) — streaming & non-streaming
+- ✅ **Legacy Completions** (`/v1/completions`)
+- ✅ **Models endpoint** (`/v1/models`)
+- ✅ **Vision / Images** — base64 and URL image inputs
+- ✅ **Streaming** — real-time SSE, same format as OpenAI
+- ✅ **Model aliases** — send `gpt-4` and it routes to Claude
+- ✅ **OAuth token support** — use Claude CLI OAuth tokens (no API key needed)
+- ✅ **API key support** — standard Anthropic API keys work too
+- ✅ **Docker ready** — one command to deploy
+- ✅ **Health check** — `/health` endpoint for monitoring
 
 ## Quick Start
 
-### Prerequisites
-
-- Docker & Docker Compose
-- Claude CLI authenticated (`claude --print "test"` must work)
-
-### Run with Docker
+### Docker (recommended)
 
 ```bash
+git clone https://github.com/adaw/claude-bridge.git
+cd claude-bridge
 cp .env.example .env
-# Edit .env - set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY
-
+# Edit .env — add your token (see Authentication below)
 docker compose up -d
 ```
 
-### Run locally (no Docker)
+Bridge is now running at `http://localhost:8088/v1`.
+
+### Node.js
 
 ```bash
+git clone https://github.com/adaw/claude-bridge.git
+cd claude-bridge
 npm install
+cp .env.example .env
+# Edit .env — add your token
 node server.js
-# or with auto-reload:
-npm run dev
 ```
 
-### Test
+## Authentication
+
+Claude Bridge supports two authentication methods:
+
+### Option 1: Anthropic API Key
+
+Standard API key from [console.anthropic.com](https://console.anthropic.com).
+
+```env
+ANTHROPIC_AUTH_TOKEN=sk-ant-api03-xxxxx
+```
+
+### Option 2: Claude CLI OAuth Token
+
+If you have Claude CLI (`@anthropic-ai/claude-code`) authenticated, you can use its OAuth token. This uses your CLI subscription — no separate API billing.
+
+```env
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-xxxxx
+```
+
+To get your OAuth token:
+```bash
+# Install Claude CLI
+npm install -g @anthropic-ai/claude-code
+
+# Authenticate (opens browser)
+claude auth login
+
+# Find the token
+cat ~/.claude/credentials.json
+# Look for the access_token field
+```
+
+OAuth tokens are auto-detected (they contain `sk-ant-oat`) and get the required Claude Code identity headers.
+
+## Configuration
+
+All configuration via environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `8080` | Server listen port |
+| `DEFAULT_MODEL` | `claude-sonnet-4-5-20250929` | Fallback model when none specified |
+| `ANTHROPIC_AUTH_TOKEN` | — | Anthropic API key |
+| `CLAUDE_CODE_OAUTH_TOKEN` | — | Claude CLI OAuth token (takes priority) |
+| `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | Anthropic API base URL |
+| `REQUEST_BODY_LIMIT` | `10mb` | Max request body size |
+| `LOG_LEVEL` | `info` | Logging level: `debug`, `info`, `warn`, `error` |
+
+## Available Models
+
+| Model ID | Alias |
+|----------|-------|
+| `claude-opus-4-6` | `opus` |
+| `claude-opus-4-5-20251101` | `opus4.5` |
+| `claude-sonnet-4-5-20250929` | `sonnet` |
+| `claude-opus-4-20250514` | `opus4` |
+| `claude-sonnet-4-20250514` | — |
+| `claude-haiku-3-5-20241022` | `haiku` |
+
+OpenAI model names are automatically mapped:
+- `gpt-4`, `gpt-4o`, `gpt-4-turbo` → default model
+- `gpt-3.5-turbo` → Haiku
+
+## Usage Examples
+
+### curl
 
 ```bash
-# Health check
-curl http://localhost:8080/health
-
-# List models
-curl http://localhost:8080/v1/models
-
-# Chat completion
-curl http://localhost:8080/v1/chat/completions \
+curl http://localhost:8088/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "sonnet",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-
-# Streaming
-curl -N http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "sonnet",
-    "messages": [{"role": "user", "content": "Tell me a joke"}],
-    "stream": true
+    "model": "claude-sonnet-4-20250514",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "max_tokens": 100
   }'
 ```
 
-## Usage with OpenAI SDK
-
-### Python
+### Python (OpenAI SDK)
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://localhost:8080/v1",
-    api_key="not-needed"  # Auth handled by Claude CLI
+    base_url="http://localhost:8088/v1",
+    api_key="not-needed"  # auth handled by bridge
 )
 
 response = client.chat.completions.create(
-    model="sonnet",
-    messages=[
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "What is the meaning of life?"}
-    ]
+    model="claude-sonnet-4-5-20250929",
+    messages=[{"role": "user", "content": "Hello!"}]
 )
 print(response.choices[0].message.content)
 ```
 
-### Python (Streaming)
+### Vision
+
+```python
+response = client.chat.completions.create(
+    model="claude-sonnet-4-5-20250929",
+    messages=[{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "What's in this image?"},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}
+        ]
+    }]
+)
+```
+
+### Streaming
 
 ```python
 stream = client.chat.completions.create(
-    model="sonnet",
-    messages=[{"role": "user", "content": "Write a poem"}],
+    model="claude-sonnet-4-5-20250929",
+    messages=[{"role": "user", "content": "Tell me a story"}],
     stream=True
 )
 for chunk in stream:
@@ -99,99 +173,73 @@ for chunk in stream:
         print(chunk.choices[0].delta.content, end="")
 ```
 
-### Node.js
+### OpenClaw
 
-```javascript
-import OpenAI from 'openai';
-
-const client = new OpenAI({
-  baseURL: 'http://localhost:8080/v1',
-  apiKey: 'not-needed',
-});
-
-const response = await client.chat.completions.create({
-  model: 'sonnet',
-  messages: [{ role: 'user', content: 'Hello!' }],
-});
-console.log(response.choices[0].message.content);
+```json
+{
+  "providers": {
+    "claude-proxy": {
+      "kind": "openai",
+      "baseURL": "http://mac.local:8088/v1",
+      "apiKey": "not-needed",
+      "models": ["claude-opus-4-6", "claude-sonnet-4-5-20250929"]
+    }
+  }
+}
 ```
 
-## Model Aliases
+## API Endpoints
 
-You can use short aliases or even OpenAI model names:
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/chat/completions` | Chat completions (streaming & non-streaming) |
+| `POST` | `/v1/completions` | Legacy text completions |
+| `GET` | `/v1/models` | List available models |
+| `GET` | `/v1/models/:id` | Get model details |
+| `GET` | `/health` | Health check |
 
-| Alias | Maps to |
-|---|---|
-| `sonnet` | `claude-sonnet-4-5-20250929` |
-| `opus` | `claude-opus-4-20250514` |
-| `haiku` | `claude-haiku-3-5-20241022` |
-| `gpt-4` / `gpt-4o` / `gpt-4-turbo` | Default model (sonnet) |
-| `gpt-3.5-turbo` | `claude-haiku-3-5-20241022` |
+## Docker Compose
 
-## Configuration
-
-| Env Variable | Default | Description |
-|---|---|---|
-| `PORT` | `8080` | Server port |
-| `DEFAULT_MODEL` | `claude-sonnet-4-5-20250929` | Default model when not specified |
-| `LOG_LEVEL` | `info` | `info` or `debug` |
-| `CLI_TIMEOUT_MS` | `300000` | CLI timeout (5 min) |
-| `MAX_CONCURRENT` | `10` | Max concurrent CLI processes |
-| `CLAUDE_CLI_PATH` | `claude` | Path to Claude CLI binary |
-
-## Supported Endpoints
-
-| Endpoint | Description |
-|---|---|
-| `GET /health` | Health check with active process count |
-| `GET /v1/models` | List available Claude models |
-| `GET /v1/models/:id` | Get single model info |
-| `POST /v1/chat/completions` | Chat completions (streaming + non-streaming) |
-| `POST /v1/completions` | Legacy text completions |
-
-## Authentication
-
-Claude CLI in Docker cannot open a browser for OAuth login. Options:
-
-### Method 1: OAuth Token (recommended for Max/Pro)
-
-```bash
-# On your Mac:
-claude setup-token
-# Copy the token to .env:
-CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+```yaml
+services:
+  claude-bridge:
+    build: .
+    container_name: claude-bridge
+    restart: unless-stopped
+    ports:
+      - "8088:8080"
+    env_file: .env
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 ```
-
-### Method 2: API Key (uses API credits)
-
-```bash
-# From https://console.anthropic.com
-ANTHROPIC_API_KEY=sk-ant-api03-...
-```
-
-### Method 3: Mount credentials
-
-Docker Compose already mounts `~/.claude` read-only. May break when tokens expire.
 
 ## Architecture
 
-- Each API request spawns a fresh Claude CLI process (`--no-session-persistence`)
-- Non-streaming: `--output-format json` returns structured result with real token usage
-- Streaming: `--output-format stream-json --include-partial-messages` provides token-by-token SSE
-- Concurrency limiter prevents spawning too many CLI processes
-- Graceful shutdown on SIGTERM/SIGINT
-- Input validation matches OpenAI error format
-- System prompts passed via `--system-prompt` flag
-- Multi-turn conversations formatted with `Human:` / `Assistant:` role prefixes
+Claude Bridge is a lightweight Express.js server (~400 lines) that:
 
-## Limitations
+1. **Receives** OpenAI-formatted requests
+2. **Converts** messages to Anthropic format (handles system prompts, image inputs, role alternation)
+3. **Forwards** to `api.anthropic.com/v1/messages` with proper auth headers
+4. **Translates** the response back to OpenAI format
 
-- Each request = new CLI process (~2-5s startup overhead)
-- Image/vision inputs not supported (text-only)
-- Tool use / function calling not supported
-- Rate limits governed by your Claude CLI subscription
-- `temperature`, `top_p`, `stop` parameters are accepted but not passed through (CLI doesn't support them)
+No database. No state. No dependencies beyond Express.
+
+### OAuth Flow
+
+When using OAuth tokens (`sk-ant-oat*`), the bridge adds required Claude Code identity headers:
+- `Authorization: Bearer <token>` (instead of `x-api-key`)
+- `anthropic-beta` headers for Claude Code features
+- `user-agent` and `x-app` identity headers
+
+This allows using your Claude CLI subscription for API access.
 
 ## License
 
 MIT
+
+## Contributing
+
+Issues and PRs welcome. Keep it simple — this is a bridge, not a framework.
