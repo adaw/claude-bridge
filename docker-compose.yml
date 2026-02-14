@@ -1,0 +1,24 @@
+services:
+  claude-bridge:
+    build: .
+    container_name: claude-bridge
+    ports:
+      - "${PORT:-8088}:8080"
+    volumes:
+      # CLI needs write access for todos, debug logs, stats-cache
+      - claude-data:/home/bridge/.claude
+    environment:
+      - PORT=8080
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-claude-sonnet-4-5-20250929}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - CLI_TIMEOUT_MS=${CLI_TIMEOUT_MS:-300000}
+      - MAX_CONCURRENT=${MAX_CONCURRENT:-10}
+      # Auth - choose one:
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: 2
+
+volumes:
+  claude-data:
