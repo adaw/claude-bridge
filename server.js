@@ -26,19 +26,19 @@ const KNOWN_MODELS = [
   { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5' },
   { id: 'claude-opus-4-20250514', name: 'Claude Opus 4' },
   { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4' },
-  { id: 'claude-haiku-3-5-20241022', name: 'Claude Haiku 3.5' },
+  { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5' },
 ];
 
 const MODEL_ALIASES = {
   'gpt-4': DEFAULT_MODEL,
   'gpt-4o': DEFAULT_MODEL,
   'gpt-4-turbo': DEFAULT_MODEL,
-  'gpt-3.5-turbo': 'claude-haiku-3-5-20241022',
+  'gpt-3.5-turbo': 'claude-haiku-4-5',
   'sonnet': 'claude-sonnet-4-5-20250929',
   'opus': 'claude-opus-4-6',
   'opus4.5': 'claude-opus-4-5-20251101',
   'opus4': 'claude-opus-4-20250514',
-  'haiku': 'claude-haiku-3-5-20241022',
+  'haiku': 'claude-haiku-4-5',
 };
 
 app.use(express.json({ limit: REQUEST_BODY_LIMIT }));
