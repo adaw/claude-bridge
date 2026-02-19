@@ -104,9 +104,9 @@ function convertTools(tools) {
   });
 }
 
-function convertToolChoice(toolChoice) {
+function convertToolChoice(toolChoice, stripTools) {
   if (!toolChoice) return undefined;
-  if (toolChoice === 'none') return { type: 'none' };  // Anthropic doesn't support 'none' but we pass it
+  if (toolChoice === 'none') return '__strip_tools__';  // Signal to remove tools entirely
   if (toolChoice === 'auto') return { type: 'auto' };
   if (toolChoice === 'required') return { type: 'any' };
   if (typeof toolChoice === 'object' && toolChoice.function?.name) {
@@ -317,9 +317,13 @@ app.post('/v1/chat/completions', async (req, res) => {
 
   // Tool calling support
   const anthropicTools = convertTools(tools);
-  if (anthropicTools) anthropicBody.tools = anthropicTools;
   const anthropicToolChoice = convertToolChoice(tool_choice);
-  if (anthropicToolChoice) anthropicBody.tool_choice = anthropicToolChoice;
+  if (anthropicToolChoice === '__strip_tools__') {
+    // tool_choice="none" → don't send tools at all (Anthropic has no "none" mode)
+  } else {
+    if (anthropicTools) anthropicBody.tools = anthropicTools;
+    if (anthropicToolChoice) anthropicBody.tool_choice = anthropicToolChoice;
+  }
 
   log('info', 'Chat request', { requestId, model, stream, msgCount: messages.length });
 
