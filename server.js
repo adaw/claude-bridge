@@ -90,6 +90,31 @@ function buildHeaders() {
   return headers;
 }
 
+// ─── Convert OpenAI tools → Anthropic tools ─────────────────────────────────
+
+function convertTools(tools) {
+  if (!tools || !Array.isArray(tools) || tools.length === 0) return undefined;
+  return tools.map(t => {
+    const fn = t.function || t;
+    return {
+      name: fn.name,
+      description: fn.description || '',
+      input_schema: fn.parameters || { type: 'object', properties: {} },
+    };
+  });
+}
+
+function convertToolChoice(toolChoice) {
+  if (!toolChoice) return undefined;
+  if (toolChoice === 'none') return { type: 'none' };  // Anthropic doesn't support 'none' but we pass it
+  if (toolChoice === 'auto') return { type: 'auto' };
+  if (toolChoice === 'required') return { type: 'any' };
+  if (typeof toolChoice === 'object' && toolChoice.function?.name) {
+    return { type: 'tool', name: toolChoice.function.name };
+  }
+  return { type: 'auto' };
+}
+
 // ─── Convert OpenAI messages → Anthropic format ─────────────────────────────
 
 function convertMessages(messages) {
@@ -103,23 +128,49 @@ function convertMessages(messages) {
       continue;
     }
 
+    // Handle assistant messages with tool_calls
+    if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
+      const contentBlocks = [];
+      // Include any text content first
+      if (msg.content) {
+        const text = typeof msg.content === 'string' ? msg.content : extractText(msg.content);
+        if (text) contentBlocks.push({ type: 'text', text });
+      }
+      // Convert each tool_call to Anthropic tool_use block
+      for (const tc of msg.tool_calls) {
+        const fn = tc.function || {};
+        let args = {};
+        if (typeof fn.arguments === 'string') {
+          try { args = JSON.parse(fn.arguments); } catch { args = {}; }
+        } else if (typeof fn.arguments === 'object') {
+          args = fn.arguments;
+        }
+        contentBlocks.push({
+          type: 'tool_use',
+          id: tc.id || genId('toolu'),
+          name: fn.name,
+          input: args,
+        });
+      }
+      pushMessage(anthropicMessages, 'assistant', contentBlocks);
+      continue;
+    }
+
+    // Handle tool result messages
+    if (msg.role === 'tool') {
+      const resultContent = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+      const toolResultBlock = {
+        type: 'tool_result',
+        tool_use_id: msg.tool_call_id || '',
+        content: resultContent,
+      };
+      pushMessage(anthropicMessages, 'user', [toolResultBlock]);
+      continue;
+    }
+
     const role = msg.role === 'assistant' ? 'assistant' : 'user';
     const content = convertContent(msg.content);
-
-    // Merge consecutive same-role messages (Anthropic requires alternating)
-    if (anthropicMessages.length > 0 && anthropicMessages[anthropicMessages.length - 1].role === role) {
-      const last = anthropicMessages[anthropicMessages.length - 1];
-      if (typeof last.content === 'string') {
-        last.content = [{ type: 'text', text: last.content }];
-      }
-      if (typeof content === 'string') {
-        last.content.push({ type: 'text', text: content });
-      } else if (Array.isArray(content)) {
-        last.content.push(...content);
-      }
-    } else {
-      anthropicMessages.push({ role, content });
-    }
+    pushMessage(anthropicMessages, role, content);
   }
 
   // Ensure first message is from user
@@ -140,6 +191,23 @@ function convertMessages(messages) {
   }
 
   return { system: systemPrompt, messages: anthropicMessages };
+}
+
+// Merge consecutive same-role messages (Anthropic requires alternating)
+function pushMessage(arr, role, content) {
+  if (arr.length > 0 && arr[arr.length - 1].role === role) {
+    const last = arr[arr.length - 1];
+    if (typeof last.content === 'string') {
+      last.content = [{ type: 'text', text: last.content }];
+    }
+    if (typeof content === 'string') {
+      last.content.push({ type: 'text', text: content });
+    } else if (Array.isArray(content)) {
+      last.content.push(...content);
+    }
+  } else {
+    arr.push({ role, content });
+  }
 }
 
 function extractText(content) {
@@ -224,7 +292,7 @@ app.get('/v1/models/:model_id', (req, res) => {
 app.post('/v1/chat/completions', async (req, res) => {
   const requestId = genId();
   const startTime = Date.now();
-  const { messages, stream = false, max_tokens, temperature, top_p } = req.body;
+  const { messages, stream = false, max_tokens, temperature, top_p, tools, tool_choice } = req.body;
 
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({ error: { message: 'messages is required', type: 'invalid_request_error' } });
@@ -246,6 +314,12 @@ app.post('/v1/chat/completions', async (req, res) => {
   if (system) anthropicBody.system = system;
   if (temperature !== undefined) anthropicBody.temperature = temperature;
   if (top_p !== undefined) anthropicBody.top_p = top_p;
+
+  // Tool calling support
+  const anthropicTools = convertTools(tools);
+  if (anthropicTools) anthropicBody.tools = anthropicTools;
+  const anthropicToolChoice = convertToolChoice(tool_choice);
+  if (anthropicToolChoice) anthropicBody.tool_choice = anthropicToolChoice;
 
   log('info', 'Chat request', { requestId, model, stream, msgCount: messages.length });
 
@@ -270,23 +344,49 @@ async function handleNonStreaming(res, body, requestId, created, model) {
   const apiRes = await callAnthropic(body, false);
   const result = await apiRes.json();
 
-  const text = (result.content || [])
-    .filter(b => b.type === 'text')
-    .map(b => b.text)
-    .join('');
+  const { text, toolCalls } = extractResponseContent(result.content || []);
+  const finishReason = result.stop_reason === 'tool_use' ? 'tool_calls' : mapStopReason(result.stop_reason);
+
+  const message = { role: 'assistant', content: text || null };
+  if (toolCalls.length > 0) {
+    message.tool_calls = toolCalls;
+  }
 
   res.json({
     id: requestId,
     object: 'chat.completion',
     created,
     model,
-    choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: mapStopReason(result.stop_reason) }],
+    choices: [{ index: 0, message, finish_reason: finishReason }],
     usage: {
       prompt_tokens: result.usage?.input_tokens || 0,
       completion_tokens: result.usage?.output_tokens || 0,
       total_tokens: (result.usage?.input_tokens || 0) + (result.usage?.output_tokens || 0),
     },
   });
+}
+
+// Extract text and tool_calls from Anthropic content blocks
+function extractResponseContent(contentBlocks) {
+  const textParts = [];
+  const toolCalls = [];
+
+  for (const block of contentBlocks) {
+    if (block.type === 'text' && block.text) {
+      textParts.push(block.text);
+    } else if (block.type === 'tool_use') {
+      toolCalls.push({
+        id: block.id || genId('call'),
+        type: 'function',
+        function: {
+          name: block.name,
+          arguments: JSON.stringify(block.input || {}),
+        },
+      });
+    }
+  }
+
+  return { text: textParts.join(''), toolCalls };
 }
 
 // ─── Streaming handler ───────────────────────────────────────────────────────
@@ -309,6 +409,11 @@ async function handleStreaming(res, body, requestId, created, model) {
   const decoder = new TextDecoder();
   let buffer = '';
 
+  // Track tool use blocks during streaming
+  let toolCallIndex = -1;
+  const activeToolCalls = new Map(); // index → { id, name }
+  let stopReason = 'stop';
+
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -326,19 +431,65 @@ async function handleStreaming(res, body, requestId, created, model) {
         try {
           const event = JSON.parse(data);
 
+          // Text content delta
           if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta' && event.delta?.text) {
             sendSSE(res, {
               id: requestId, object: 'chat.completion.chunk', created, model,
               choices: [{ index: 0, delta: { content: event.delta.text }, finish_reason: null }],
             });
           }
+
+          // Tool use block starts
+          if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
+            toolCallIndex++;
+            const block = event.content_block;
+            activeToolCalls.set(toolCallIndex, { id: block.id, name: block.name });
+            sendSSE(res, {
+              id: requestId, object: 'chat.completion.chunk', created, model,
+              choices: [{
+                index: 0,
+                delta: {
+                  tool_calls: [{
+                    index: toolCallIndex,
+                    id: block.id || genId('call'),
+                    type: 'function',
+                    function: { name: block.name, arguments: '' },
+                  }],
+                },
+                finish_reason: null,
+              }],
+            });
+          }
+
+          // Tool use input delta (JSON chunks)
+          if (event.type === 'content_block_delta' && event.delta?.type === 'input_json_delta' && event.delta?.partial_json !== undefined) {
+            sendSSE(res, {
+              id: requestId, object: 'chat.completion.chunk', created, model,
+              choices: [{
+                index: 0,
+                delta: {
+                  tool_calls: [{
+                    index: toolCallIndex,
+                    function: { arguments: event.delta.partial_json },
+                  }],
+                },
+                finish_reason: null,
+              }],
+            });
+          }
+
+          // Track stop reason
+          if (event.type === 'message_delta' && event.delta?.stop_reason) {
+            stopReason = event.delta.stop_reason;
+          }
         } catch { /* skip non-JSON */ }
       }
     }
   } finally {
+    const finishReason = stopReason === 'tool_use' ? 'tool_calls' : mapStopReason(stopReason);
     sendSSE(res, {
       id: requestId, object: 'chat.completion.chunk', created, model,
-      choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
     });
     res.write('data: [DONE]\n\n');
     res.end();
@@ -352,6 +503,7 @@ function sendSSE(res, data) {
 function mapStopReason(reason) {
   if (reason === 'end_turn' || reason === 'stop_sequence') return 'stop';
   if (reason === 'max_tokens') return 'length';
+  if (reason === 'tool_use') return 'tool_calls';
   return 'stop';
 }
 
