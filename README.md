@@ -15,15 +15,19 @@
 ## Features
 
 - ✅ **Chat Completions** (`/v1/chat/completions`) — streaming & non-streaming
+- ✅ **Tool Calling** — full OpenAI function calling support (`tools`, `tool_choice`, streaming `tool_calls`)
+- ✅ **tool_choice modes** — `auto`, `required`, `none`, and specific function targeting
+- ✅ **Multi-turn tool use** — tool results fed back correctly across conversation turns
 - ✅ **Legacy Completions** (`/v1/completions`)
 - ✅ **Models endpoint** (`/v1/models`)
 - ✅ **Vision / Images** — base64 and URL image inputs
-- ✅ **Streaming** — real-time SSE, same format as OpenAI
+- ✅ **Streaming** — real-time SSE, same format as OpenAI (including streamed tool calls)
 - ✅ **Model aliases** — send `gpt-4` and it routes to Claude
 - ✅ **OAuth token support** — use Claude CLI OAuth tokens (no API key needed)
 - ✅ **API key support** — standard Anthropic API keys work too
 - ✅ **Docker ready** — one command to deploy
 - ✅ **Health check** — `/health` endpoint for monitoring
+- ✅ **E2E test suite** — 30 tests covering all features (`test-e2e.sh`)
 
 ## Quick Start
 
@@ -160,6 +164,48 @@ response = client.chat.completions.create(
 )
 ```
 
+### Tool Calling
+
+```python
+tools = [{
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "description": "Get weather for a location",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "location": {"type": "string"}
+            },
+            "required": ["location"]
+        }
+    }
+}]
+
+response = client.chat.completions.create(
+    model="claude-opus-4-6",
+    messages=[{"role": "user", "content": "What's the weather in Prague?"}],
+    tools=tools,
+    tool_choice="auto"
+)
+
+# Handle tool call
+tool_call = response.choices[0].message.tool_calls[0]
+print(f"Call: {tool_call.function.name}({tool_call.function.arguments})")
+
+# Send tool result back
+response = client.chat.completions.create(
+    model="claude-opus-4-6",
+    messages=[
+        {"role": "user", "content": "What's the weather in Prague?"},
+        response.choices[0].message,
+        {"role": "tool", "tool_call_id": tool_call.id, "content": '{"temp": 5, "condition": "cloudy"}'}
+    ],
+    tools=tools
+)
+print(response.choices[0].message.content)
+```
+
 ### Streaming
 
 ```python
@@ -223,6 +269,16 @@ services:
       timeout: 5s
       retries: 3
 ```
+
+## Testing
+
+Run the full E2E test suite (requires a running bridge instance):
+
+```bash
+./test-e2e.sh
+```
+
+Tests cover: health check, non-streaming tool calls, multi-turn tool results, `tool_choice` modes (auto/required/none/specific), streaming tool calls, text-only responses, and multiple tool results. **30/30 tests passing.**
 
 ## Architecture
 
